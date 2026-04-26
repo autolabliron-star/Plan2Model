@@ -1,4 +1,6 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  (import.meta.env.DEV ? 'http://localhost:8000' : '');
 
 export function absoluteApiUrl(path) {
   if (!path) return '';
@@ -24,4 +26,3 @@ export async function processFloorPlan({ file, settings }) {
   }
   return payload;
 }
-

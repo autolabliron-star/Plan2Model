@@ -94,51 +94,31 @@ VITE_API_BASE_URL=http://localhost:8000
 
 ## Deploy To Railway
 
-Plan2Model is an isolated monorepo: deploy `backend/` and `frontend/` as two Railway services from the same GitHub repository.
+Plan2Model can be deployed to Railway in one service from the repository root. The root Dockerfile builds the React frontend, copies it into the FastAPI image, and FastAPI serves both the API and the React app from the same Railway domain.
 
 ### Files Added For Railway
 
-- `backend/railway.json`: starts FastAPI with `uvicorn` on Railway's `$PORT`.
+- `railway.json`: tells Railway to build the repository root with the root Dockerfile.
+- `Dockerfile`: builds the frontend and runs the FastAPI backend as one web service.
+- `backend/railway.json`: optional config if you choose a separate backend service.
 - `frontend/Dockerfile`: builds the Vite app and serves `dist/` with Caddy.
 - `frontend/Caddyfile`: serves the React SPA and falls back to `index.html`.
-- `frontend/railway.json`: tells Railway to use the frontend Dockerfile.
+- `frontend/railway.json`: optional config if you choose a separate frontend service.
 - `.gitignore`: excludes local build output, dependencies, and generated storage files.
 
-### 1. Push To GitHub
+### Option A: One Railway Service From Repo Root
 
-Railway deployment from the dashboard expects a GitHub repo.
+This is the simplest MVP deployment.
 
-```bash
-git init
-git add .
-git commit -m "Prepare Plan2Model for Railway"
-git branch -M main
-git remote add origin YOUR_GITHUB_REPO_URL
-git push -u origin main
-```
-
-### 2. Create The Backend Service
-
-1. In Railway, create a new project.
-2. Add a service from your GitHub repo.
-3. Set the service root directory to:
+1. Create a Railway project from the GitHub repo.
+2. Keep the root directory as `/`.
+3. Railway should use `/railway.json`.
+4. Deploy.
+5. Generate a public domain in Settings > Networking.
+6. Test:
 
 ```text
-/backend
-```
-
-4. Make sure Railway uses:
-
-```text
-/backend/railway.json
-```
-
-5. Deploy the service.
-6. In the backend service Settings > Networking, click **Generate Domain**.
-7. Test:
-
-```text
-https://YOUR-BACKEND-DOMAIN.railway.app/api/health
+https://YOUR-APP-DOMAIN.railway.app/api/health
 ```
 
 Expected response:
@@ -147,7 +127,20 @@ Expected response:
 {"status":"ok"}
 ```
 
-### 3. Create The Frontend Service
+Since frontend and backend are served from the same domain in Option A, no `VITE_API_BASE_URL` or CORS change is required.
+
+### Option B: Separate Backend And Frontend Services
+
+Use this only if you want independently deployed services.
+
+#### Backend Service
+
+1. Add a Railway service from your GitHub repo.
+2. Set root directory to `/backend`.
+3. Set Railway config file to `/backend/railway.json`.
+4. Deploy and generate a backend domain.
+
+#### Frontend Service
 
 1. Add a second Railway service from the same GitHub repo.
 2. Set the service root directory to:
@@ -171,7 +164,7 @@ VITE_API_BASE_URL=https://YOUR-BACKEND-DOMAIN.railway.app
 5. Deploy the frontend service.
 6. In the frontend service Settings > Networking, click **Generate Domain**.
 
-### 4. Configure Backend CORS
+#### Configure Backend CORS
 
 For a quick MVP demo, set this variable on the backend service:
 
@@ -187,7 +180,7 @@ ALLOWED_ORIGINS=https://YOUR-FRONTEND-DOMAIN.railway.app
 
 After changing backend variables, redeploy the backend.
 
-### 5. Optional Persistent Storage
+### Optional Persistent Storage
 
 Railway service filesystems are not a permanent database. For uploads/generated GLB/OBJ files, add a Railway Volume to the backend and set:
 

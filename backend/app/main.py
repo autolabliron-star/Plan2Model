@@ -5,6 +5,7 @@ import os
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .model_generator import generate_wall_model
@@ -12,6 +13,7 @@ from .processing import detect_wall_segments, load_upload_as_image
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 STORAGE_DIR = Path(os.getenv("PLAN2MODEL_STORAGE_DIR", BASE_DIR / "storage")).resolve()
+FRONTEND_DIST_DIR = Path(os.getenv("FRONTEND_DIST_DIR", BASE_DIR.parent / "frontend" / "dist")).resolve()
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 MODEL_DIR = STORAGE_DIR / "models"
 DEFAULT_ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
@@ -35,6 +37,11 @@ app.add_middleware(
 )
 
 app.mount("/storage", StaticFiles(directory=STORAGE_DIR), name="storage")
+
+if FRONTEND_DIST_DIR.exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 
 @app.get("/api/health")
@@ -89,3 +96,12 @@ async def process_floor_plan(
         "glb_url": f"/storage/models/{glb_path.name}",
         "obj_url": f"/storage/models/{obj_path.name}",
     }
+
+
+if FRONTEND_DIST_DIR.exists():
+    @app.get("/{path:path}")
+    def serve_frontend(path: str) -> FileResponse:
+        requested_path = (FRONTEND_DIST_DIR / path).resolve()
+        if requested_path.is_file() and FRONTEND_DIST_DIR in requested_path.parents:
+            return FileResponse(requested_path)
+        return FileResponse(FRONTEND_DIST_DIR / "index.html")
