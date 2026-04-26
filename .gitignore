@@ -1,0 +1,9 @@
+backend/.venv/
+backend/storage/models/*
+backend/storage/uploads/*
+!backend/storage/models/.gitkeep
+!backend/storage/uploads/.gitkeep
+frontend/dist/
+frontend/node_modules/
+.DS_Store
+*.log
