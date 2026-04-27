@@ -31,6 +31,9 @@ import {
   Upload,
   Warehouse,
   AlertTriangle,
+  CheckCircle2,
+  Plus,
+  X,
 } from 'lucide-react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -40,6 +43,9 @@ import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
 import { processFloorPlan } from './api.js';
 
 const STORAGE_KEY = 'plan2model.outdoorProject.v1';
+const WELCOME_KEY = 'plan2model.hasSeenWelcome.v1';
+const PROJECTS_KEY = 'plan2model.savedProjects.v1';
+const CURRENT_PROJECT_KEY = 'plan2model.currentProjectId.v1';
 const gridMeters = 20;
 const snapSize = 0.25;
 
@@ -67,6 +73,13 @@ const materialPresets = [
 ];
 
 const categories = ['All', 'Structures', 'Boundaries', 'Ground', 'Landscape', 'Vehicles', 'Utilities'];
+const homeownerCategories = {
+  Boundaries: 'Walls & Gates',
+  Ground: 'Ground & Driveways',
+  Landscape: 'Garden',
+};
+
+const homeownerCategoryOrder = ['All', 'Structures', 'Walls & Gates', 'Ground & Driveways', 'Garden', 'Utilities', 'Vehicles'];
 
 const modelingTools = [
   { id: 'select', label: 'Select', icon: MousePointer2 },
@@ -96,6 +109,20 @@ const objectCatalog = [
   { type: 'water-tank', label: 'Water tank', category: 'Utilities', icon: Box, size: [1.6, 2.1, 1.6], materialId: 'steel', costModel: 'each', costRate: 800 },
   { type: 'utility-box', label: 'Utility box', category: 'Utilities', icon: Box, size: [1, 1.2, 0.6], materialId: 'steel', costModel: 'each', costRate: 350 },
 ];
+
+const recommendedStarterSets = [
+  { id: 'garage-driveway', label: 'Garage + driveway', description: 'A simple parking concept.', types: ['garage', 'driveway'] },
+  { id: 'backyard-wall', label: 'Backyard wall', description: 'Boundary wall with a gate.', types: ['wall', 'gate'] },
+  { id: 'utility-zone', label: 'Utility zone', description: 'Tank, utility box, and base.', types: ['slab', 'water-tank', 'utility-box'] },
+  { id: 'garden-corner', label: 'Garden corner', description: 'Lawn with two trees.', types: ['lawn', 'tree', 'tree'] },
+];
+
+const toolHelpText = {
+  select: 'Click an object to move, resize, or edit it.',
+  wall: 'Click and drag to draw a wall. Release to place.',
+  slab: 'Drag a rectangle for concrete, parking, or patio areas.',
+  measure: 'Drag between two points to measure.',
+};
 
 const starterObjects = [
   makeObject('slab', { id: 'site-slab', label: 'Concrete slab', position: [0, 0, 0], size: [10, 0.12, 7] }),
@@ -286,6 +313,10 @@ function makeObject(type, overrides = {}) {
 
 function materialFor(materialId) {
   return materialPresets.find((material) => material.id === materialId) || materialPresets[0];
+}
+
+function displayCategory(category) {
+  return homeownerCategories[category] || category;
 }
 
 function getObjectTemplate(type) {
@@ -570,6 +601,35 @@ function cloneObjects(objects) {
 
 function cloneLevels(levels) {
   return levels.map((level) => ({ ...level }));
+}
+
+function readSavedProjects() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeProject({ projectName, levels, objects, measurements, selectedId, hasSeenWelcome }) {
+  return {
+    version: 4,
+    projectName,
+    hasSeenWelcome,
+    lastEditedAt: new Date().toISOString(),
+    levels,
+    objects,
+    measurements,
+    selectedId,
+  };
+}
+
+function demoMeasurements() {
+  return [
+    { id: 'demo-measure-drive', levelId: 'ground', start: [-7, 6.2], end: [-3.4, 6.2] },
+    { id: 'demo-measure-yard', levelId: 'ground', start: [-7, -5.4], end: [7, -5.4] },
+  ];
 }
 
 function normalizeLevels(levels) {
@@ -881,6 +941,8 @@ function TopDownEditor({
   const canvasRef = useRef(null);
   const scale = 32;
   const half = gridMeters / 2;
+  const toolLabel = modelingTools.find((tool) => tool.id === toolMode)?.label || 'Select';
+  const ruleStatus = ruleSummary?.errors ? 'Blocked' : ruleSummary?.warnings ? 'Needs attention' : 'Looks good';
 
   const toCanvas = (x, z) => [(x + half) * scale, (z + half) * scale];
 
@@ -1067,6 +1129,15 @@ function TopDownEditor({
         );
       });
 
+  const draftStatus = (() => {
+    if (!draft) return 'Snap: 0.25m';
+    const width = Math.abs(draft.current[0] - draft.start[0]);
+    const depth = Math.abs(draft.current[1] - draft.start[1]);
+    const length = Math.hypot(width, depth);
+    if (draft.tool === 'slab') return `${width.toFixed(2)}m x ${depth.toFixed(2)}m`;
+    return `${length.toFixed(2)}m`;
+  })();
+
   return (
     <section
       className={`plan-canvas tool-${toolMode}`}
@@ -1086,6 +1157,11 @@ function TopDownEditor({
       }}
       aria-label="2D top-down outdoor site editor"
     >
+      <div className={`canvas-status rule-${ruleSummary?.errors ? 'error' : ruleSummary?.warnings ? 'warning' : 'ok'}`}>
+        <strong>{toolLabel}</strong>
+        <span>{draftStatus}</span>
+        <em>{ruleStatus}</em>
+      </div>
       <svg viewBox={`0 0 ${gridMeters * scale} ${gridMeters * scale}`} role="img">
         {Array.from({ length: gridMeters + 1 }, (_, index) => (
           <g key={index}>
@@ -1140,7 +1216,7 @@ function TopDownEditor({
               <text y="4" textAnchor="middle">
                 {object.label}
               </text>
-              {ruleSeverity !== 'ok' && (
+              {isSelected && ruleSeverity !== 'ok' && (
                 <text y={depth / 2 + 17} textAnchor="middle" className="rule-badge-text">
                   {ruleSeverity === 'error' ? 'Rule error' : 'Rule warning'}
                 </text>
@@ -1206,30 +1282,41 @@ function TopDownEditor({
   );
 }
 
-function Catalog({ addObject }) {
+function Catalog({ addObject, addStarterSet }) {
   const [activeCategory, setActiveCategory] = useState('All');
   const [query, setQuery] = useState('');
   const filtered = objectCatalog.filter((item) => {
-    const matchesCategory = activeCategory === 'All' || item.category === activeCategory;
+    const matchesCategory = activeCategory === 'All' || displayCategory(item.category) === activeCategory;
     const matchesQuery = item.label.toLowerCase().includes(query.toLowerCase());
     return matchesCategory && matchesQuery;
   });
 
   return (
     <section className="panel">
-      <h2>Add objects</h2>
+      <div className="panel-heading">
+        <h2>Add objects</h2>
+        <span className="tag">Homeowner library</span>
+      </div>
       <label className="search-field">
         <Search size={16} aria-hidden="true" />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search objects" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search garage, wall, slab..." />
       </label>
       <div className="category-tabs">
-        {categories.map((category) => (
+        {homeownerCategoryOrder.map((category) => (
           <button
             className={activeCategory === category ? 'active' : ''}
             key={category}
             onClick={() => setActiveCategory(category)}
           >
             {category}
+          </button>
+        ))}
+      </div>
+      <div className="starter-sets">
+        {recommendedStarterSets.map((set) => (
+          <button key={set.id} onClick={() => addStarterSet(set)}>
+            <strong>{set.label}</strong>
+            <span>{set.description}</span>
           </button>
         ))}
       </div>
@@ -1242,8 +1329,9 @@ function Catalog({ addObject }) {
               <Icon size={18} aria-hidden="true" />
               <span>
                 <strong>{item.label}</strong>
-                <small>{material.label} · {formatMoney(item.costRate)}/{unitLabelFor(item.costModel)}</small>
+                <small>{displayCategory(item.category)} · {item.size[0]}m x {item.size[2]}m</small>
               </span>
+              <i style={{ '--swatch': material.color }} aria-hidden="true" />
             </button>
           );
         })}
@@ -1252,13 +1340,9 @@ function Catalog({ addObject }) {
   );
 }
 
-function ModelingTools({ toolMode, setToolMode, measurements, clearMeasurements }) {
+function ModelingTools({ toolMode, setToolMode, measurements, clearMeasurements, openObjectDrawer }) {
   return (
-    <section className="panel modeling-tools">
-      <div className="panel-heading">
-        <h2>Model tools</h2>
-        <span className="tag">{modelingTools.find((tool) => tool.id === toolMode)?.label}</span>
-      </div>
+    <nav className="tool-rail" aria-label="Model tools">
       <div className="tool-grid">
         {modelingTools.map((tool) => {
           const Icon = tool.icon;
@@ -1274,12 +1358,16 @@ function ModelingTools({ toolMode, setToolMode, measurements, clearMeasurements 
             </button>
           );
         })}
+        <button onClick={openObjectDrawer} title="Add object">
+          <Plus size={18} aria-hidden="true" />
+          <span>Add object</span>
+        </button>
       </div>
-      <p className="panel-copy">Draw walls as lines, slabs as rectangles, and measurements directly on the active level.</p>
+      <p className="tool-help">{toolHelpText[toolMode]}</p>
       <button className="ghost-button" onClick={clearMeasurements} disabled={!measurements.length}>
         Clear measurements
       </button>
-    </section>
+    </nav>
   );
 }
 
@@ -1326,22 +1414,23 @@ function Outliner({ objects, levels, selectedId, setSelectedId, updateObject, re
 function RuleChecksPanel({ ruleSummary, selectedId, setSelectedId, onAutoCorrect }) {
   const selectedIssues = selectedId ? ruleSummary.byObject[selectedId] || [] : [];
   const shownIssues = selectedIssues.length ? selectedIssues : ruleSummary.issues.slice(0, 6);
+  const statusLabel = ruleSummary.errors ? 'Blocked' : ruleSummary.warnings ? 'Needs attention' : 'Looks good';
 
   return (
     <section className={`panel rule-checks ${ruleSummary.errors ? 'has-errors' : ruleSummary.warnings ? 'has-warnings' : 'is-clean'}`}>
       <div className="panel-heading">
-        <h2>Model checks</h2>
+        <h2>Build Checks</h2>
         {ruleSummary.issues.length ? <AlertTriangle size={18} aria-hidden="true" /> : <ShieldCheck size={18} aria-hidden="true" />}
       </div>
       <div className="rule-score">
-        <strong>{ruleSummary.errors ? `${ruleSummary.errors} errors` : 'No errors'}</strong>
+        <strong>{statusLabel}</strong>
         <span>{ruleSummary.warnings} warnings</span>
       </div>
       <button className="secondary-button" onClick={onAutoCorrect} disabled={!ruleSummary.issues.length}>
         <ShieldCheck size={18} aria-hidden="true" />
-        Auto-correct supports
+        Auto-fix support
       </button>
-      {!ruleSummary.issues.length && <p className="panel-copy">No basic collisions, missing supports, or base-surface warnings found.</p>}
+      {!ruleSummary.issues.length && <p className="panel-copy">This layout has no obvious support, collision, driveway, or wall-span issues.</p>}
       {!!shownIssues.length && (
         <div className="rule-list">
           {shownIssues.map((issue) => (
@@ -1350,9 +1439,10 @@ function RuleChecksPanel({ ruleSummary, selectedId, setSelectedId, onAutoCorrect
               key={issue.id}
               onClick={() => setSelectedId(issue.objectIds[0])}
             >
-              <span>{issue.severity === 'error' ? 'Error' : 'Warning'}</span>
+              <span>{issue.severity === 'error' ? 'Blocked' : 'Needs attention'}</span>
               <strong>{issue.title}</strong>
               <small>{issue.message}</small>
+              <em>{issue.title.includes('support') || issue.title.includes('base') ? 'Try Auto-fix support' : 'Select object'}</em>
             </button>
           ))}
         </div>
@@ -1582,7 +1672,287 @@ function ImportPlan({ file, setFile, onImport, isProcessing }) {
   );
 }
 
-function exportScene(objects, format, levels = defaultLevels) {
+function WelcomeScreen({ onOpenDemo, onStartBlank, onImportPlan }) {
+  return (
+    <section className="welcome-screen" aria-label="Welcome to Plan2Model">
+      <div className="welcome-card">
+        <div className="brand-mark large" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <div>
+          <div className="kicker">Outdoor design studio</div>
+          <h1>Plan your yard before you build it.</h1>
+          <p>Open a polished demo, start with an empty site, or import a floor plan and turn it into an editable 3D layout.</p>
+        </div>
+        <div className="welcome-actions">
+          <button className="primary-button" onClick={onOpenDemo}>
+            <Layers3 size={18} aria-hidden="true" />
+            Open showcase demo
+          </button>
+          <button className="secondary-button" onClick={onStartBlank}>
+            <Grid3X3 size={18} aria-hidden="true" />
+            Start blank yard
+          </button>
+          <button className="ghost-button" onClick={onImportPlan}>
+            <Upload size={18} aria-hidden="true" />
+            Import floor plan
+          </button>
+        </div>
+        <div className="next-strip" aria-label="What you can do next">
+          {['Draw wall', 'Add garage', 'Change color', 'Check model', 'Export'].map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CommandBar({
+  projectName,
+  setProjectName,
+  objects,
+  ruleSummary,
+  levels,
+  activeLevelId,
+  setActiveLevelId,
+  workspaceMode,
+  setWorkspaceMode,
+  undo,
+  redo,
+  canUndo,
+  canRedo,
+  exportFormat,
+  setExportFormat,
+  onExport,
+  savedProjects,
+  currentProjectId,
+  onSwitchProject,
+  onSaveProject,
+  onNewProject,
+}) {
+  return (
+    <header className="command-bar">
+      <div className="command-brand">
+        <div className="brand-mark" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <label>
+          <span>Project</span>
+          <input value={projectName} onChange={(event) => setProjectName(event.target.value)} />
+        </label>
+      </div>
+      <div className="command-status" aria-label="Project status">
+        <span>{objects.length} objects</span>
+        <span>{ruleSummary.errors ? 'Blocked' : ruleSummary.warnings ? 'Needs attention' : 'Looks good'}</span>
+        <span>{levelFor(levels, activeLevelId).name}</span>
+      </div>
+      <label className="project-switcher">
+        <span>Saved plans</span>
+        <select value={currentProjectId} onChange={(event) => onSwitchProject(event.target.value)}>
+          {savedProjects.length ? (
+            savedProjects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))
+          ) : (
+            <option value={currentProjectId}>Unsaved plan</option>
+          )}
+        </select>
+      </label>
+      <div className="level-tabs compact" aria-label="Active level">
+        {levels.map((level) => (
+          <button
+            className={activeLevelId === level.id ? 'active' : ''}
+            key={level.id}
+            onClick={() => setActiveLevelId(level.id)}
+          >
+            {level.name}
+          </button>
+        ))}
+      </div>
+      <nav className="step-tabs compact" aria-label="Workspace mode">
+        {['both', '2d', '3d'].map((view) => (
+          <button className={workspaceMode === view ? 'active' : ''} key={view} onClick={() => setWorkspaceMode(view)}>
+            {view === 'both' ? '2D + 3D' : view.toUpperCase()}
+          </button>
+        ))}
+      </nav>
+      <div className="command-actions">
+        <button className="ghost-button icon-text" onClick={undo} disabled={!canUndo}>
+          <Undo2 size={17} aria-hidden="true" />
+          Undo
+        </button>
+        <button className="ghost-button icon-text" onClick={redo} disabled={!canRedo}>
+          <Redo2 size={17} aria-hidden="true" />
+          Redo
+        </button>
+        <button className="ghost-button icon-text" onClick={onNewProject}>
+          <Plus size={17} aria-hidden="true" />
+          New
+        </button>
+        <button className="secondary-button icon-text" onClick={onSaveProject}>
+          <Save size={17} aria-hidden="true" />
+          Save
+        </button>
+        <label className="export-select">
+          <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
+            <option value="glb">GLB</option>
+            <option value="obj">OBJ</option>
+          </select>
+        </label>
+        <button className="primary-button icon-text" onClick={onExport}>
+          <Download size={17} aria-hidden="true" />
+          Export
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function ObjectDrawer({ isOpen, onClose, addObject, addStarterSet }) {
+  if (!isOpen) return null;
+  return (
+    <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}>
+      <aside className="object-drawer" aria-label="Add objects" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="drawer-heading">
+          <div>
+            <div className="kicker">Object library</div>
+            <h2>Add to your plan</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Close object library">
+            <X size={18} aria-hidden="true" />
+          </button>
+        </div>
+        <Catalog addObject={addObject} addStarterSet={addStarterSet} />
+      </aside>
+    </div>
+  );
+}
+
+function InspectorTabs({
+  activeTab,
+  setActiveTab,
+  selected,
+  levels,
+  updateSelected,
+  removeSelected,
+  duplicateSelected,
+  ruleSummary,
+  selectedId,
+  setSelectedId,
+  autoCorrectModel,
+  objects,
+  updateObject,
+  removeObject,
+  updateLevelVisibility,
+  activeLevelId,
+  setActiveLevelId,
+  file,
+  setFile,
+  importDetectedWalls,
+  isProcessing,
+  quality,
+  setQuality,
+  sceneStats,
+  saveProjectFile,
+  openProjectFile,
+  resetProject,
+  loadDemoProject,
+}) {
+  const tabs = [
+    { id: 'properties', label: 'Properties' },
+    { id: 'checks', label: 'Checks' },
+    { id: 'cost', label: 'Cost' },
+    { id: 'layers', label: 'Layers' },
+  ];
+
+  return (
+    <aside className="inspector-panel">
+      <nav className="inspector-tabs" aria-label="Inspector tabs">
+        {tabs.map((tab) => (
+          <button className={activeTab === tab.id ? 'active' : ''} key={tab.id} onClick={() => setActiveTab(tab.id)}>
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+      <div className="inspector-body">
+        {activeTab === 'properties' && (
+          <Properties
+            selected={selected}
+            levels={levels}
+            updateSelected={updateSelected}
+            removeSelected={removeSelected}
+            duplicateSelected={duplicateSelected}
+          />
+        )}
+        {activeTab === 'checks' && (
+          <>
+            <RuleChecksPanel
+              ruleSummary={ruleSummary}
+              selectedId={selectedId}
+              setSelectedId={setSelectedId}
+              onAutoCorrect={autoCorrectModel}
+            />
+            <Outliner
+              objects={objects}
+              levels={levels}
+              selectedId={selectedId}
+              setSelectedId={setSelectedId}
+              updateObject={updateObject}
+              removeObject={removeObject}
+            />
+          </>
+        )}
+        {activeTab === 'cost' && (
+          <>
+            <CostSummary objects={objects} />
+            <section className="panel">
+              <h2>Project tools</h2>
+              <label className="format-row">
+                Quality
+                <select value={quality} onChange={(event) => setQuality(event.target.value)}>
+                  {Object.entries(qualityPresets).map(([key, preset]) => (
+                    <option key={key} value={key}>
+                      {preset.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="stats-grid" aria-label="Scene performance stats">
+                <div><span>Visible</span><strong>{sceneStats.visibleObjects}</strong></div>
+                <div><span>Meshes</span><strong>{sceneStats.estimatedMeshes}</strong></div>
+                <div><span>Levels</span><strong>{sceneStats.visibleLevels}/{sceneStats.levels}</strong></div>
+              </div>
+              <button className="secondary-button" onClick={saveProjectFile}><Save size={18} aria-hidden="true" />Save JSON</button>
+              <button className="ghost-button" onClick={openProjectFile}><FolderOpen size={18} aria-hidden="true" />Open JSON</button>
+              <button className="primary-button" onClick={loadDemoProject}><Layers3 size={18} aria-hidden="true" />Load showcase demo</button>
+              <button className="ghost-button" onClick={resetProject}><RotateCcw size={18} aria-hidden="true" />Reset local project</button>
+            </section>
+          </>
+        )}
+        {activeTab === 'layers' && (
+          <>
+            <LevelsPanel
+              levels={levels}
+              activeLevelId={activeLevelId}
+              setActiveLevelId={setActiveLevelId}
+              updateLevelVisibility={updateLevelVisibility}
+            />
+            <ImportPlan file={file} setFile={setFile} onImport={importDetectedWalls} isProcessing={isProcessing} />
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+async function exportScene(objects, format, levels = defaultLevels) {
   const scene = new THREE.Scene();
   const group = new THREE.Group();
   group.name = 'Plan2Model Outdoor Project';
@@ -1598,16 +1968,16 @@ function exportScene(objects, format, levels = defaultLevels) {
     return;
   }
 
-  new GLTFExporter().parse(
-    scene,
-    (result) => {
-      downloadBlob(result, 'plan2model-project.glb', 'model/gltf-binary');
-    },
-    (error) => {
-      console.error(error);
-    },
-    { binary: true },
-  );
+  try {
+    const result = await new GLTFExporter().parseAsync(scene, { binary: true });
+    const blob = result instanceof ArrayBuffer
+      ? new Blob([result], { type: 'model/gltf-binary' })
+      : new Blob([JSON.stringify(result)], { type: 'model/gltf+json' });
+    downloadBlob(blob, 'plan2model-project.glb', blob.type);
+  } catch (error) {
+    console.error(error);
+    throw new Error('Could not export the GLB model.');
+  }
 }
 
 function downloadBlob(content, filename, type) {
@@ -1615,8 +1985,11 @@ function downloadBlob(content, filename, type) {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
   link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
   link.click();
   URL.revokeObjectURL(link.href);
+  link.remove();
 }
 
 export default function App() {
@@ -1624,19 +1997,33 @@ export default function App() {
     const saved = localStorage.getItem(STORAGE_KEY);
     return saved ? JSON.parse(saved) : null;
   }, []);
+  const initialSavedProjects = useMemo(readSavedProjects, []);
+  const initialCurrentProjectId = useMemo(() => {
+    const storedId = localStorage.getItem(CURRENT_PROJECT_KEY);
+    return storedId || initialSavedProjects[0]?.id || `project-${crypto.randomUUID()}`;
+  }, [initialSavedProjects]);
+  const storedCurrentProject = initialSavedProjects.find((project) => project.id === initialCurrentProjectId)?.data;
+  const initialProjectPayload = storedCurrentProject || savedProject;
+  const hasSavedProject = !!(savedProject && !Array.isArray(savedProject) && Array.isArray(savedProject.objects));
   const [objects, setObjects] = useState(() => {
-    const savedObjects = Array.isArray(savedProject) ? savedProject : savedProject?.objects;
-    return savedObjects ? savedObjects.map(normalizedObject) : starterObjects;
+    const savedObjects = Array.isArray(initialProjectPayload) ? initialProjectPayload : initialProjectPayload?.objects;
+    return savedObjects ? savedObjects.map(normalizedObject) : cloneObjects(demoObjects).map(normalizedObject);
   });
   const [levels, setLevels] = useState(() => {
-    return normalizeLevels(savedProject?.levels);
+    return normalizeLevels(initialProjectPayload?.levels);
   });
-  const [measurements, setMeasurements] = useState(() => (Array.isArray(savedProject?.measurements) ? savedProject.measurements : []));
+  const [measurements, setMeasurements] = useState(() => (Array.isArray(initialProjectPayload?.measurements) ? initialProjectPayload.measurements : demoMeasurements()));
+  const [projectName, setProjectName] = useState(initialProjectPayload?.projectName || 'My outdoor plan');
+  const [hasSeenWelcome, setHasSeenWelcome] = useState(() => localStorage.getItem(WELCOME_KEY) === 'true' || initialProjectPayload?.hasSeenWelcome === true);
+  const [savedProjects, setSavedProjects] = useState(initialSavedProjects);
+  const [currentProjectId, setCurrentProjectId] = useState(initialCurrentProjectId);
+  const [activeInspectorTab, setActiveInspectorTab] = useState('properties');
+  const [isObjectDrawerOpen, setIsObjectDrawerOpen] = useState(false);
   const [activeLevelId, setActiveLevelId] = useState('ground');
-  const [selectedId, setSelectedId] = useState(objects[0]?.id || '');
+  const [selectedId, setSelectedId] = useState(initialProjectPayload?.selectedId || (hasSavedProject ? objects[0]?.id : 'demo-garage') || '');
   const [historyPast, setHistoryPast] = useState([]);
   const [historyFuture, setHistoryFuture] = useState([]);
-  const [activeView, setActiveView] = useState('both');
+  const [workspaceMode, setWorkspaceMode] = useState(() => (window.innerWidth < 920 ? '2d' : 'both'));
   const [toolMode, setToolMode] = useState('select');
   const [transformMode, setTransformMode] = useState('translate');
   const [quality, setQuality] = useState('medium');
@@ -1648,8 +2035,16 @@ export default function App() {
   const liveChangeStartRef = useRef(null);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 3, levels, objects, measurements }));
-  }, [levels, measurements, objects]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeProject({
+      projectName,
+      hasSeenWelcome,
+      levels,
+      objects,
+      measurements,
+      selectedId,
+    })));
+    localStorage.setItem(CURRENT_PROJECT_KEY, currentProjectId);
+  }, [currentProjectId, hasSeenWelcome, levels, measurements, objects, projectName, selectedId]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -1725,6 +2120,19 @@ export default function App() {
     });
     commitObjects((current) => [...current, created], created.id);
     setToolMode('select');
+    setActiveInspectorTab('properties');
+    setIsObjectDrawerOpen(false);
+  };
+
+  const addStarterSet = (set) => {
+    const created = set.types.map((type, index) => makeObject(type, {
+      levelId: activeLevelId,
+      position: [snap(-2 + index * 1.4), 0, snap(1 + Math.floor(index / 2) * 1.4)],
+    }));
+    commitObjects((current) => [...current, ...created], created[0]?.id || selectedId);
+    setToolMode('select');
+    setActiveInspectorTab('properties');
+    setIsObjectDrawerOpen(false);
   };
 
   const createObjectFromTool = (type, overrides) => {
@@ -1737,6 +2145,70 @@ export default function App() {
 
   const addMeasurement = (measurement) => {
     setMeasurements((current) => [...current, measurement]);
+  };
+
+  const currentProjectPayload = () => serializeProject({
+    projectName,
+    hasSeenWelcome,
+    levels,
+    objects,
+    measurements,
+    selectedId,
+  });
+
+  const saveCurrentProject = () => {
+    const payload = currentProjectPayload();
+    const savedRecord = {
+      id: currentProjectId,
+      name: projectName.trim() || 'Untitled outdoor plan',
+      updatedAt: payload.lastEditedAt,
+      preview: `${objects.length} objects`,
+      data: payload,
+    };
+    setSavedProjects((current) => {
+      const withoutCurrent = current.filter((project) => project.id !== currentProjectId);
+      const next = [savedRecord, ...withoutCurrent].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+      localStorage.setItem(PROJECTS_KEY, JSON.stringify(next));
+      return next;
+    });
+    localStorage.setItem(CURRENT_PROJECT_KEY, currentProjectId);
+  };
+
+  const loadSavedProject = (projectId) => {
+    const project = savedProjects.find((item) => item.id === projectId);
+    if (!project?.data) return;
+    const payload = project.data;
+    const loadedLevels = normalizeLevels(payload.levels);
+    const loadedObjects = Array.isArray(payload.objects) ? payload.objects.map(normalizedObject) : starterObjects;
+    setCurrentProjectId(project.id);
+    setProjectName(payload.projectName || project.name || 'Saved outdoor plan');
+    setLevels(loadedLevels);
+    setActiveLevelId(loadedLevels[0]?.id || 'ground');
+    setMeasurements(Array.isArray(payload.measurements) ? payload.measurements : []);
+    setObjects(cloneObjects(loadedObjects));
+    setSelectedId(payload.selectedId || loadedObjects[0]?.id || '');
+    setHistoryPast([]);
+    setHistoryFuture([]);
+    setHasSeenWelcome(true);
+    localStorage.setItem(WELCOME_KEY, 'true');
+    localStorage.setItem(CURRENT_PROJECT_KEY, project.id);
+  };
+
+  const createNewProject = () => {
+    const resetObjects = starterObjects.map((item) => ({ ...item, id: `${item.type}-${crypto.randomUUID()}` }));
+    const nextProjectId = `project-${crypto.randomUUID()}`;
+    setCurrentProjectId(nextProjectId);
+    setProjectName('New outdoor plan');
+    setLevels(cloneLevels(defaultLevels));
+    setActiveLevelId('ground');
+    setMeasurements([]);
+    setObjects(cloneObjects(resetObjects));
+    setSelectedId(resetObjects[0]?.id || '');
+    setHistoryPast([]);
+    setHistoryFuture([]);
+    setHasSeenWelcome(true);
+    localStorage.setItem(WELCOME_KEY, 'true');
+    localStorage.setItem(CURRENT_PROJECT_KEY, nextProjectId);
   };
 
   const autoCorrectModel = () => {
@@ -1819,7 +2291,7 @@ export default function App() {
   };
 
   const saveProjectFile = () => {
-    downloadBlob(JSON.stringify({ version: 3, levels, objects, measurements }, null, 2), 'plan2model-project.json', 'application/json');
+    downloadBlob(JSON.stringify(currentProjectPayload(), null, 2), `${projectName.trim() || 'plan2model-project'}.json`, 'application/json');
   };
 
   const loadProjectFile = async (event) => {
@@ -1843,6 +2315,10 @@ export default function App() {
       setLevels(loadedLevels);
       setActiveLevelId(loadedLevels[0]?.id || 'ground');
       setMeasurements(loadedMeasurements);
+      setProjectName(payload.projectName || projectFile.name.replace(/\.json$/i, '') || 'Imported project');
+      setCurrentProjectId(`project-${crypto.randomUUID()}`);
+      setHasSeenWelcome(true);
+      localStorage.setItem(WELCOME_KEY, 'true');
       commitObjects(normalized, normalized[0]?.id || '');
       setError('');
     } catch (err) {
@@ -1857,6 +2333,10 @@ export default function App() {
     setLevels(cloneLevels(defaultLevels));
     setActiveLevelId('ground');
     setMeasurements([]);
+    setProjectName('Blank yard concept');
+    setCurrentProjectId(`project-${crypto.randomUUID()}`);
+    setHasSeenWelcome(true);
+    localStorage.setItem(WELCOME_KEY, 'true');
     commitObjects(resetObjects, resetObjects[0]?.id || '');
     setError('');
   };
@@ -1866,90 +2346,91 @@ export default function App() {
     const showcaseObjects = cloneObjects(demoObjects).map(normalizedObject);
     setLevels(showcaseLevels);
     setActiveLevelId('ground');
-    setMeasurements([
-      { id: 'demo-measure-drive', levelId: 'ground', start: [-7, 6.2], end: [-3.4, 6.2] },
-      { id: 'demo-measure-yard', levelId: 'ground', start: [-7, -5.4], end: [7, -5.4] },
-    ]);
+    setMeasurements(demoMeasurements());
+    setProjectName('Showcase outdoor build');
+    setCurrentProjectId(`project-${crypto.randomUUID()}`);
+    setHasSeenWelcome(true);
+    localStorage.setItem(WELCOME_KEY, 'true');
+    setActiveInspectorTab('checks');
     commitObjects(showcaseObjects, 'demo-garage');
     setError('');
+  };
+
+  const startBlankProject = () => {
+    createNewProject();
+    setActiveInspectorTab('properties');
+  };
+
+  const startImportFlow = () => {
+    setHasSeenWelcome(true);
+    localStorage.setItem(WELCOME_KEY, 'true');
+    setActiveInspectorTab('layers');
   };
 
   const updateLevelVisibility = (levelId, visible) => {
     setLevels((current) => current.map((level) => (level.id === levelId ? { ...level, visible } : level)));
   };
 
+  const exportCurrentScene = async () => {
+    setError('');
+    try {
+      await exportScene(objects, exportFormat, levels);
+    } catch (err) {
+      setError(err.message || 'Export failed.');
+    }
+  };
+
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
-          <div>
-            <div className="kicker">Outdoor modeling studio</div>
-            <h1>Plan2Model</h1>
-            <p>Shape garages, walls, yards, slabs, fences, and site objects before the build starts.</p>
-          </div>
-        </div>
-        <div className="topbar-actions">
-          <div className="project-pills" aria-label="Project summary">
-            <span>{objects.length} objects</span>
-            <span>{formatMoney(objects.map(normalizedObject).reduce((sum, item) => sum + estimateObjectCost(item), 0))}</span>
-            <span>{ruleSummary.errors ? `${ruleSummary.errors} rule errors` : `${ruleSummary.warnings} warnings`}</span>
-            <span>{levelFor(levels, activeLevelId).name}</span>
-          </div>
-          <div className="level-tabs" aria-label="Active level">
-            {levels.map((level) => (
-              <button
-                className={activeLevelId === level.id ? 'active' : ''}
-                key={level.id}
-                onClick={() => setActiveLevelId(level.id)}
-              >
-                {level.name}
-              </button>
-            ))}
-          </div>
-          <nav className="step-tabs" aria-label="View mode">
-            {['both', '2d', '3d'].map((view) => (
-              <button className={activeView === view ? 'active' : ''} key={view} onClick={() => setActiveView(view)}>
-                {view === 'both' ? '2D + 3D' : view.toUpperCase()}
-              </button>
-            ))}
-          </nav>
-        </div>
-      </header>
+    <main className="app-shell studio-shell">
+      {!hasSeenWelcome && (
+        <WelcomeScreen
+          onOpenDemo={loadDemoProject}
+          onStartBlank={startBlankProject}
+          onImportPlan={startImportFlow}
+        />
+      )}
+
+      <CommandBar
+        projectName={projectName}
+        setProjectName={setProjectName}
+        objects={objects}
+        ruleSummary={ruleSummary}
+        levels={levels}
+        activeLevelId={activeLevelId}
+        setActiveLevelId={setActiveLevelId}
+        workspaceMode={workspaceMode}
+        setWorkspaceMode={setWorkspaceMode}
+        undo={undo}
+        redo={redo}
+        canUndo={!!historyPast.length}
+        canRedo={!!historyFuture.length}
+        exportFormat={exportFormat}
+        setExportFormat={setExportFormat}
+        onExport={exportCurrentScene}
+        savedProjects={savedProjects}
+        currentProjectId={currentProjectId}
+        onSwitchProject={loadSavedProject}
+        onSaveProject={saveCurrentProject}
+        onNewProject={createNewProject}
+      />
 
       {error && <div className="error-banner">{error}</div>}
 
-      <div className="object-shelf">
-        <Catalog addObject={addObject} />
-      </div>
+      <div className="studio-layout">
+        <ModelingTools
+          toolMode={toolMode}
+          setToolMode={setToolMode}
+          measurements={measurements}
+          clearMeasurements={() => setMeasurements([])}
+          openObjectDrawer={() => setIsObjectDrawerOpen(true)}
+        />
 
-      <div className="editor-layout">
-        <aside className="left-rail">
-          <ModelingTools
-            toolMode={toolMode}
-            setToolMode={setToolMode}
-            measurements={measurements}
-            clearMeasurements={() => setMeasurements([])}
-          />
-          <LevelsPanel
-            levels={levels}
-            activeLevelId={activeLevelId}
-            setActiveLevelId={setActiveLevelId}
-            updateLevelVisibility={updateLevelVisibility}
-          />
-          <ImportPlan file={file} setFile={setFile} onImport={importDetectedWalls} isProcessing={isProcessing} />
-        </aside>
-
-        <section className={`design-stage ${activeView}`}>
-          {activeView !== '3d' && (
+        <section className={`design-stage ${workspaceMode}`}>
+          {workspaceMode !== '3d' && (
             <div className="stage-panel">
               <div className="stage-heading">
                 <h2>2D site plan</h2>
-                <span>{toolMode === 'select' ? 'Grid: 1m, snap: 0.25m' : modelingTools.find((tool) => tool.id === toolMode)?.label}</span>
+                <span>{toolHelpText[toolMode]}</span>
               </div>
               <TopDownEditor
                 objects={objects}
@@ -1969,7 +2450,7 @@ export default function App() {
               />
             </div>
           )}
-          {activeView !== '2d' && (
+          {workspaceMode !== '2d' && (
             <div className="stage-panel">
               <div className="stage-heading">
                 <h2>3D model</h2>
@@ -1999,110 +2480,52 @@ export default function App() {
           )}
         </section>
 
-        <aside className="right-rail">
-          <Outliner
-            objects={objects}
-            levels={levels}
-            selectedId={selectedId}
-            setSelectedId={setSelectedId}
-            updateObject={updateObject}
-            removeObject={removeObject}
-          />
-          <RuleChecksPanel
-            ruleSummary={ruleSummary}
-            selectedId={selectedId}
-            setSelectedId={setSelectedId}
-            onAutoCorrect={autoCorrectModel}
-          />
-          <Properties
-            selected={selected}
-            levels={levels}
-            updateSelected={(patch) => updateObject(selected.id, patch)}
-            removeSelected={removeSelected}
-            duplicateSelected={duplicateSelected}
-          />
-          <CostSummary objects={objects} />
-          <section className="panel">
-            <h2>Project</h2>
-            <div className="metric">
-              <span>Objects</span>
-              <strong>{objects.length}</strong>
-            </div>
-            <div className="quick-actions">
-              <button className="ghost-button" onClick={undo} disabled={!historyPast.length}>
-                <Undo2 size={18} aria-hidden="true" />
-                Undo
-              </button>
-              <button className="ghost-button" onClick={redo} disabled={!historyFuture.length}>
-                <Redo2 size={18} aria-hidden="true" />
-                Redo
-              </button>
-            </div>
-            <button className="danger-button" onClick={removeSelected} disabled={!selected}>
-              <Trash2 size={18} aria-hidden="true" />
-              Delete selected
-            </button>
-            <label className="format-row">
-              Quality
-              <select value={quality} onChange={(event) => setQuality(event.target.value)}>
-                {Object.entries(qualityPresets).map(([key, preset]) => (
-                  <option key={key} value={key}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="stats-grid" aria-label="Scene performance stats">
-              <div>
-                <span>Visible</span>
-                <strong>{sceneStats.visibleObjects}</strong>
-              </div>
-              <div>
-                <span>Meshes</span>
-                <strong>{sceneStats.estimatedMeshes}</strong>
-              </div>
-              <div>
-                <span>Levels</span>
-                <strong>{sceneStats.visibleLevels}/{sceneStats.levels}</strong>
-              </div>
-            </div>
-            <label className="format-row">
-              Export
-              <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
-                <option value="glb">GLB</option>
-                <option value="obj">OBJ</option>
-              </select>
-            </label>
-            <button className="primary-button" onClick={() => exportScene(objects, exportFormat, levels)}>
-              <Download size={18} aria-hidden="true" />
-              Export {exportFormat.toUpperCase()}
-            </button>
-            <button className="secondary-button" onClick={saveProjectFile}>
-              <Save size={18} aria-hidden="true" />
-              Save JSON
-            </button>
-            <button className="primary-button" onClick={loadDemoProject}>
-              <Layers3 size={18} aria-hidden="true" />
-              Load showcase demo
-            </button>
-            <button className="ghost-button" onClick={() => projectFileRef.current?.click()}>
-              <FolderOpen size={18} aria-hidden="true" />
-              Open JSON
-            </button>
-            <input
-              ref={projectFileRef}
-              className="hidden-file"
-              type="file"
-              accept="application/json,.json"
-              onChange={loadProjectFile}
-            />
-            <button className="ghost-button" onClick={resetProject}>
-              <RotateCcw size={18} aria-hidden="true" />
-              Reset local project
-            </button>
-          </section>
-        </aside>
+        <InspectorTabs
+          activeTab={activeInspectorTab}
+          setActiveTab={setActiveInspectorTab}
+          selected={selected}
+          levels={levels}
+          updateSelected={(patch) => selected && updateObject(selected.id, patch)}
+          removeSelected={removeSelected}
+          duplicateSelected={duplicateSelected}
+          ruleSummary={ruleSummary}
+          selectedId={selectedId}
+          setSelectedId={setSelectedId}
+          autoCorrectModel={autoCorrectModel}
+          objects={objects}
+          updateObject={updateObject}
+          removeObject={removeObject}
+          updateLevelVisibility={updateLevelVisibility}
+          activeLevelId={activeLevelId}
+          setActiveLevelId={setActiveLevelId}
+          file={file}
+          setFile={setFile}
+          importDetectedWalls={importDetectedWalls}
+          isProcessing={isProcessing}
+          quality={quality}
+          setQuality={setQuality}
+          sceneStats={sceneStats}
+          saveProjectFile={saveProjectFile}
+          openProjectFile={() => projectFileRef.current?.click()}
+          resetProject={resetProject}
+          loadDemoProject={loadDemoProject}
+        />
       </div>
+
+      <ObjectDrawer
+        isOpen={isObjectDrawerOpen}
+        onClose={() => setIsObjectDrawerOpen(false)}
+        addObject={addObject}
+        addStarterSet={addStarterSet}
+      />
+
+      <input
+        ref={projectFileRef}
+        className="hidden-file"
+        type="file"
+        accept="application/json,.json"
+        onChange={loadProjectFile}
+      />
     </main>
   );
 }
